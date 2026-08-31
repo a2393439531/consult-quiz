@@ -82,15 +82,21 @@ async function pageHome(app) {
   <div class="wrap">
     <div class="section-title">章节刷题<a class="more" href="#/chapters">全部章节 →</a></div>
     <div class="ch-list">${idx.chapters.map(ch => chCard(ch)).join("")}</div>
+    <div class="section-title">历年真题<a class="more" href="#/exams">全部 →</a></div>
+    <div class="ch-list">${idx.exams.filter(e => e.kind === "zhenti").map(examCard).join("")}</div>
     <div class="section-title">综合模拟卷<a class="more" href="#/exams">全部 →</a></div>
-    <div class="ch-list">${idx.exams.map(e => `
-      <a class="ch-card" href="#/quiz/exam/${e.id}">
-        <div class="ch-no" style="background:linear-gradient(135deg,#0ea5e9,#6366f1)">卷</div>
-        <div class="ch-info"><div class="t">${esc(e.title)}</div><div class="m">${e.n} 题</div></div>
-      </a>`).join("")}</div>
-    <div class="footer-note">数据来源于 2026 年备考资料 PDF（建工网校 / 环球网校 / 川杨学堂），仅供个人学习使用</div>
+    <div class="ch-list">${idx.exams.filter(e => e.kind !== "zhenti").map(examCard).join("")}</div>
+    <div class="footer-note">数据来源于 2026 年备考资料 PDF（建工网校 / 环球网校 / 川杨学堂 / 优路 / 天一等），仅供个人学习使用</div>
   </div>`;
   updateChapterBars(idx);
+}
+
+function examCard(e) {
+  return `
+  <a class="ch-card" href="#/quiz/exam/${e.id}">
+    <div class="ch-no" style="background:linear-gradient(135deg,#0ea5e9,#6366f1)">${e.kind === "zhenti" ? "真" : "卷"}</div>
+    <div class="ch-info"><div class="t">${esc(e.title)}</div><div class="m">${e.n} 题</div></div>
+  </a>`;
 }
 
 function chCard(ch) {
@@ -348,20 +354,26 @@ async function pageNotes(app, no) {
 /* ---------- 综合卷 ---------- */
 async function pageExams(app) {
   const idx = await loadJSON(INDEX_URL);
-  app.innerHTML = `
-  <div class="header"><h1>综合模拟卷</h1><div class="sub">全真模拟 + 专题集训 · 共 ${idx.exams.reduce((s, e) => s + e.n, 0)} 题</div></div>
-  <div class="wrap"><div class="ch-list">
-    ${idx.exams.map(e => `
+  const zt = idx.exams.filter(e => e.kind === "zhenti");
+  const mn = idx.exams.filter(e => e.kind !== "zhenti");
+  const card = e => `
       <div style="display:flex;gap:10px">
         <a class="ch-card" href="#/quiz/exam/${e.id}" style="flex:1">
-          <div class="ch-no" style="background:linear-gradient(135deg,#0ea5e9,#6366f1)">卷</div>
+          <div class="ch-no" style="background:linear-gradient(135deg,#0ea5e9,#6366f1)">${e.kind === "zhenti" ? "真" : "卷"}</div>
           <div class="ch-info"><div class="t">${esc(e.title)}</div><div class="m">${e.n} 题</div></div>
         </a>
         <a class="ch-card" href="#/quiz/exam/${e.id}/wrong" style="flex:0 0 auto;align-self:stretch;padding:14px 14px">
           <div class="ch-info" style="display:flex;align-items:center;color:var(--warn);font-weight:600;font-size:13px">只刷错题</div>
         </a>
-      </div>`).join("")}
-  </div></div>`;
+      </div>`;
+  app.innerHTML = `
+  <div class="header"><h1>历年真题 · 模拟卷</h1><div class="sub">真题 ${zt.reduce((s, e) => s + e.n, 0)} 题 · 模拟 ${mn.reduce((s, e) => s + e.n, 0)} 题</div></div>
+  <div class="wrap">
+    <div class="section-title">📜 历年真题</div>
+    <div class="ch-list">${zt.map(card).join("") || '<div class="empty">暂无</div>'}</div>
+    <div class="section-title">📝 模拟冲刺卷</div>
+    <div class="ch-list">${mn.map(card).join("")}</div>
+  </div>`;
 }
 
 /* ---------- 错题本 ---------- */
