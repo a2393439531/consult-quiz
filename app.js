@@ -82,13 +82,14 @@ async function pageHome(app) {
   const wrongCnt = Object.values(p).filter(v => v.s === 0).length;
   const totN = idx.chapters.reduce((s, ch) => s + ch.n, 0) + idx.exams.reduce((s, e) => s + e.n, 0);
   app.innerHTML = `
-  <div class="header">
+  <div class="header"><div class="header-in">
     <h1>咨询工程师 · 实务刷题</h1>
     <div class="sub">2026《现代咨询方法与实务》章节复习与题库 · 更新于 ${idx.generated}</div>
     <div class="stats-row">
       <div class="stat"><b>${totN}</b><span>题库总题数</span></div>
       <div class="stat"><b>${done}</b><span>已作答</span></div>
       <div class="stat"><b>${wrongCnt}</b><span>待攻克</span></div>
+    </div>
     </div>
   </div>
   <div class="wrap">
@@ -131,7 +132,7 @@ async function pageChapters(app) {
   const idx = await loadJSON(INDEX_URL);
   const p = loadProgress();
   app.innerHTML = `
-  <div class="header"><h1>全部章节</h1><div class="sub">按章节复习 · 点击章节进入</div></div>
+  <div class="header"><div class="header-in"><h1>全部章节</h1><div class="sub">按章节复习 · 点击章节进入</div></div></div>
   <div class="wrap"><div class="ch-list">
     ${idx.chapters.map(ch => chCard(ch)).join("")}
   </div></div>`;
@@ -169,13 +170,14 @@ async function pageChapter(app, no) {
     (browseState.src === "全部" || q.src === browseState.src) &&
     (!browseState.kw || (q.q + q.ctx + q.a).includes(browseState.kw)));
   app.innerHTML = `
-  <div class="header">
+  <div class="header"><div class="header-in">
     <h1>第${cn(no)}章 ${esc(d.title)}</h1>
     <div class="sub">共 ${d.questions.length} 题 · ${meta && meta.notes ? meta.notes + " 个背诵考点" : ""}</div>
     <div class="btn-row" style="margin-top:14px">
       <a class="btn" href="#/quiz/ch/${no}" style="flex:1">▶ 开始刷题</a>
       <a class="btn ghost" href="#/quiz/ch/${no}/wrong" style="flex:1">🔁 只刷错题</a>
       ${d.notes && d.notes.length ? `<a class="btn ghost" href="#/notes/${no}" style="flex:1">📖 背诵考点</a>` : ""}
+    </div>
     </div>
   </div>
   <div class="wrap">
@@ -292,8 +294,9 @@ function drawQuiz(app) {
       <span class="pos">${quiz.i + 1} / ${total}</span>
     </div>
     <div class="qbar"><i style="width:${quiz.i / total * 100}%"></i></div>
-    <div class="quiz-card">
+    <div class="quiz-card ${q.ctx ? "split" : ""}">
       ${q.ctx ? `<div class="ctx">${esc(q.ctx)}</div>` : ""}
+      <div class="qmain">
       <div class="qq"><span class="qnum">${q.type === "案例" ? "【案例】" : "【简答】"}</span>${esc(q.q)}</div>
       ${q.pages && q.pages.length ? `
         ${pagesOpen ? `<div class="page-imgs">${q.pages.map(u => `<img src="${esc(u)}" loading="lazy" alt="原题页面">`).join("")}</div>` : ""}
@@ -309,6 +312,7 @@ function drawQuiz(app) {
           <button class="btn green" data-s="2">😀 会了</button>
         </div>` : `
         <div class="btn-row"><button class="btn block" id="reveal">显示答案</button></div>`}
+      </div>
     </div>
     <div style="margin-top:12px;display:flex;gap:10px">
       <button class="btn gray sm" id="prev" ${quiz.i === 0 ? "disabled" : ""}>← 上一题</button>
@@ -376,15 +380,17 @@ async function pageNotes(app, no) {
   const d = await loadChapter(no);
   if (!d.notes || !d.notes.length) { app.innerHTML = `<div class="empty">本章暂无背诵考点</div>`; return; }
   app.innerHTML = `
-  <div class="header"><h1>第${cn(no)}章 ${esc(d.title)} · 背诵考点</h1><div class="sub">共 ${d.notes.length} 个考点 · 点击展开</div>
+  <div class="header"><div class="header-in"><h1>第${cn(no)}章 ${esc(d.title)} · 背诵考点</h1><div class="sub">共 ${d.notes.length} 个考点 · 点击展开</div></div>
     <div class="btn-row"><button class="btn ghost" id="expand-all" style="flex:1">全部展开</button><button class="btn ghost" id="collapse-all" style="flex:1">全部收起</button></div>
   </div>
   <div class="wrap">
+    <div class="notes-list">
     ${d.notes.map((n, i) => `
       <div class="note-item" data-i="${i}">
         <div class="note-title">${esc(n.t)}<span class="arrow">▶</span></div>
         <div class="note-content">${esc(n.c)}</div>
       </div>`).join("")}
+    </div>
   </div>`;
   app.querySelectorAll(".note-title").forEach(t => t.onclick = () => t.closest(".note-item").classList.toggle("open"));
   document.getElementById("expand-all").onclick = () => app.querySelectorAll(".note-item").forEach(n => n.classList.add("open"));
@@ -407,7 +413,7 @@ async function pageExams(app) {
         </a>
       </div>`;
   app.innerHTML = `
-  <div class="header"><h1>历年真题 · 模拟卷</h1><div class="sub">真题 ${zt.reduce((s, e) => s + e.n, 0)} 题 · 模拟 ${mn.reduce((s, e) => s + e.n, 0)} 题</div></div>
+  <div class="header"><div class="header-in"><h1>历年真题 · 模拟卷</h1><div class="sub">真题 ${zt.reduce((s, e) => s + e.n, 0)} 题 · 模拟 ${mn.reduce((s, e) => s + e.n, 0)} 题</div></div></div>
   <div class="wrap">
     <div class="section-title">📜 历年真题</div>
     <div class="ch-list">${zt.map(card).join("") || '<div class="empty">暂无</div>'}</div>
@@ -422,7 +428,7 @@ async function pageWrong(app) {
   const p = loadProgress();
   const wrongIds = Object.keys(p).filter(id => p[id].s === 0);
   if (!wrongIds.length) {
-    app.innerHTML = `<div class="header"><h1>错题本</h1></div><div class="wrap"><div class="empty">暂无错题，继续保持！🎉<br><br><button class="btn sm gray" onclick="if(confirm('确定清空全部作答记录吗？'))clearProgress()">清空全部记录</button></div></div>`;
+    app.innerHTML = `<div class="header"><div class="header-in"><h1>错题本</h1></div></div><div class="wrap"><div class="empty">暂无错题，继续保持！🎉<br><br><button class="btn sm gray" onclick="if(confirm('确定清空全部作答记录吗？'))clearProgress()">清空全部记录</button></div></div>`;
     return;
   }
   // 按章节分组
@@ -439,7 +445,7 @@ async function pageWrong(app) {
     if (qs.length) wrongExams.push({ e, n: qs.length, qs });
   }));
   app.innerHTML = `
-  <div class="header"><h1>错题本</h1><div class="sub">共 ${wrongIds.length} 道标记为“不会”的题</div></div>
+  <div class="header"><div class="header-in"><h1>错题本</h1><div class="sub">共 ${wrongIds.length} 道标记为“不会”的题</div></div></div>
   <div class="wrap">
     ${wrongExams.map(x => `
       <div class="section-title">${esc(x.e.title)}（${x.n} 题）<a class="more" href="#/quiz/exam/${x.e.id}/wrong">去重刷 →</a></div>

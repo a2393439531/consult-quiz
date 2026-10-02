@@ -183,3 +183,41 @@ body {
 
 .empty { text-align: center; color: var(--muted); padding: 60px 20px; font-size: 14px; }
 .footer-note { text-align: center; color: #9aa5b5; font-size: 11px; padding: 26px 0 10px; }
+
+/* ---------- 桌面端适配 ---------- */
+@media (min-width: 1024px) {
+  .wrap { max-width: 1100px; padding: 20px 24px 40px; }
+  .header-in { max-width: 1100px; margin: 0 auto; padding: 6px 0 2px; }
+  .header { padding: 30px 24px 26px; }
+  .header h1 { font-size: 26px; }
+  .header .sub { font-size: 14px; }
+  .stats-row { max-width: 560px; }
+  .stats-row .stat b { font-size: 26px; }
+  /* 首页/章节列表双列 */
+  .ch-list { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: stretch; }
+  .section-title { font-size: 17px; margin: 26px 2px 12px; }
+  /* 题目浏览双列 */
+  #qlist { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
+  .q-text { font-size: 15px; }
+  .q-body .ans { font-size: 14.5px; }
+  /* 刷题页：左背景右答题双栏 */
+  .quiz-card.split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; align-items: start; padding: 20px; }
+  .quiz-card.split > .ctx {
+    max-height: calc(100vh - 240px); position: sticky; top: 20px;
+    margin-bottom: 0; font-size: 14.5px;
+  }
+  .quiz-card.split .qq { font-size: 17px; }
+  .quiz-card .qq { font-size: 16.5px; }
+  .quiz-card .ctx { font-size: 14.5px; }
+  .ans-zone .ans { font-size: 14.5px; }
+  .quiz-top { max-width: 1100px; margin: 0 auto; }
+  .quiz-done { max-width: 640px; margin: 0 auto; }
+  /* 背诵考点双列 */
+  .notes-list { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
+  .note-content { font-size: 14.5px; }
+  /* 底部导航收窄居中 */
+  .tabbar-in { max-width: 720px; margin: 0 auto; display: flex; width: 100%; }
+}
+@media (max-width: 1023.9px) {
+  .tabbar-in { display: flex; width: 100%; }
+}
