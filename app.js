@@ -175,6 +175,7 @@ async function pageChapter(app, no) {
   app.querySelectorAll(".chip").forEach(el => el.onclick = () => { browseState.src = el.dataset.src; render(); });
   const kw = document.getElementById("kw");
   kw.oninput = () => { browseState.kw = kw.value.trim(); refreshList(d); };
+  bindToggles();
 }
 function refreshList(d) {
   const list = d.questions.filter(q =>
@@ -204,12 +205,12 @@ function bindToggles() {
   document.querySelectorAll(".toggle-btn").forEach(b => b.onclick = () => {
     const id = b.dataset.tid;
     browseState.expanded[id] = !browseState.expanded[id];
-    const item = b.closest(".q-item");
-    const open = browseState.expanded[id];
     const q = currentBrowseQuestion(id);
-    if (!q) return;
-    item.querySelector(".q-body, .toggle-btn").remove();
-    item.insertAdjacentHTML("beforeend", (open ? `<div class="q-body"><div class="ans-label">参考答案</div><div class="ans">${esc(q.a)}</div></div>` : "") + `<button class="toggle-btn" data-tid="${esc(id)}">${open ? "收起答案" : "查看答案"}</button>`);
+    const item = b.closest(".q-item");
+    if (!q || !item) return;
+    const tmp = document.createElement("div");
+    tmp.innerHTML = qItem(q);
+    item.replaceWith(tmp.firstElementChild);
     bindToggles();
   });
 }
