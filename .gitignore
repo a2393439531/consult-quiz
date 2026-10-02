@@ -1,0 +1,3 @@
+__pycache__/
+tools/config.local.json
+tools/_pagemap_cache.json

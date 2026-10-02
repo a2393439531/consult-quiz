@@ -3,39 +3,143 @@
 
 const INDEX_URL = "data/index.json";
 const LS_KEY = "cctp2026_progress_v1";
+const SESSION_KEY = "cctp2026_session_v1";
+let indexData = null;
+let renderVersion = 0;
+
+function notify(message) {
+  let el = document.getElementById("notice");
+  if (!el) {
+    el = document.createElement("div"); el.id = "notice";
+    el.setAttribute("role", "status"); document.body.appendChild(el);
+  }
+  el.textContent = message;
+}
+function canonicalId(id) { return indexData?.aliases?.[id] || id; }
+function validProgress(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("进度格式错误");
+  const clean = Object.create(null);
+  for (const [id, item] of Object.entries(value)) {
+    if (!/^[a-zA-Z0-9_-]+$/.test(id) || !item || !Number.isInteger(item.s) || item.s < 0 || item.s > 2 ||
+        !Number.isFinite(item.t) || item.t < 0) throw new Error("进度记录无效");
+    const key = canonicalId(id);
+    if (!clean[key] || item.t >= clean[key].t) clean[key] = { s: item.s, t: item.t };
+  }
+  return clean;
+}
 
 /* ---------- 进度存储（内存缓存，避免每张卡片重复解析 localStorage） ---------- */
 let _progressCache = null;
+let _progressReadable = true;
 function loadProgress() {
   if (_progressCache) return _progressCache;
-  try { _progressCache = JSON.parse(localStorage.getItem(LS_KEY) || "{}"); } catch (e) { _progressCache = {}; }
+  try { _progressCache = validProgress(JSON.parse(localStorage.getItem(LS_KEY) || "{}")); _progressReadable = true; }
+  catch (e) { _progressReadable = false; _progressCache = Object.create(null); notify("无法读取学习记录，请检查浏览器存储或导入备份。原记录未被删除。"); }
   return _progressCache;
 }
 function saveStatus(qid, s) {
-  const p = loadProgress();
-  p[qid] = { s, t: Date.now() };
+  _progressCache = null; // Merge the most recent persisted records from other tabs.
+  const latest = loadProgress();
+  if (!_progressReadable) return false;
+  const p = { ...latest, [canonicalId(qid)]: { s, t: Date.now() } };
+  try { localStorage.setItem(LS_KEY, JSON.stringify(p)); }
+  catch (e) { notify("保存失败，本题尚未记录。请检查浏览器存储或导出已有进度。"); return false; }
   _progressCache = p;
-  localStorage.setItem(LS_KEY, JSON.stringify(p));
+  return true;
 }
 function getStatus(qid) {
-  const v = loadProgress()[qid];
+  const v = loadProgress()[canonicalId(qid)];
   return v ? v.s : -1; // -1 未做, 0 不会, 1 模糊, 2 会
 }
-function clearProgress() { _progressCache = null; localStorage.removeItem(LS_KEY); render(); }
+function clearProgress() {
+  try { localStorage.removeItem(LS_KEY); localStorage.removeItem(SESSION_KEY); }
+  catch (e) { notify("清空失败，请检查浏览器存储。"); return; }
+  _progressCache = null; quiz = null; render();
+}
 // 其他标签页修改进度时同步刷新内存缓存
-window.addEventListener("storage", () => { _progressCache = null; });
+window.addEventListener("storage", event => {
+  if (event.key === SESSION_KEY && !location.hash.startsWith("#/quiz/")) quiz = null;
+  if (event.key === LS_KEY || event.key === null) { _progressCache = null; if (event.key === null) quiz = null; render(); }
+});
+
+function exportProgress() {
+  try {
+    const raw = localStorage.getItem(LS_KEY) || "{}";
+    const data = { schema: 1, exportedAt: new Date().toISOString(), progress: JSON.parse(raw) };
+    const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
+    const a = document.createElement("a"); a.href = url; a.download = "咨询实务学习进度.json";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (e) { notify("导出失败：" + e.message); }
+}
+async function importProgress(file) {
+  try {
+    if (!file || file.size > 5 * 1024 * 1024) throw new Error("请选择小于 5 MB 的 JSON 备份");
+    const backup = JSON.parse(await file.text());
+    if (backup.schema !== 1) throw new Error("不支持的备份版本");
+    await loadJSON(INDEX_URL);
+    const incoming = validProgress(backup.progress);
+    const validIds = new Set([...indexData.chapters, ...indexData.exams].flatMap(m => m.questionIds));
+    if (Object.keys(incoming).some(id => !validIds.has(id))) throw new Error("备份包含当前题库不存在的题目");
+    _progressCache = null;
+    const merged = validProgress(loadProgress());
+    for (const [id, item] of Object.entries(incoming)) if (!merged[id] || item.t >= merged[id].t) merged[id] = item;
+    localStorage.setItem(LS_KEY, JSON.stringify(merged)); _progressCache = merged; _progressReadable = true;
+    notify("进度已导入；重复记录保留较新的评分。"); render();
+  } catch (e) { notify("导入失败，已有记录保持不变：" + e.message); }
+}
+
+function saveSession() {
+  if (!quiz) return;
+  const snapshot = { schema: 1, version: indexData.version, key: quiz.key,
+    queue: quiz.queue.map(q => q.id), i: quiz.i, marks: quiz.marks, ended: !!quiz.ended };
+  try { localStorage.setItem(SESSION_KEY, JSON.stringify(snapshot)); }
+  catch (e) { notify("本轮位置保存失败；已成功保存的题目评分仍然保留。"); }
+}
+function restoreSession(key, questions) {
+  try {
+    const s = JSON.parse(localStorage.getItem(SESSION_KEY) || "null");
+    if (!s || s.schema !== 1 || s.version !== indexData.version || s.key !== key || s.ended) return null;
+    const byId = new Map(questions.map(q => [q.id, q]));
+    if (!Array.isArray(s.queue) || !s.queue.length || new Set(s.queue).size !== s.queue.length ||
+        s.queue.some(id => !byId.has(id)) || !Number.isInteger(s.i) || s.i < 0 || s.i >= s.queue.length ||
+        !s.marks || typeof s.marks !== "object" || Array.isArray(s.marks) ||
+        Object.entries(s.marks).some(([id, v]) => !s.queue.includes(id) || !Number.isInteger(v) || v < 0 || v > 2)) return null;
+    return { queue: s.queue.map(id => byId.get(id)), i: s.i, marks: s.marks };
+  } catch (e) { return null; }
+}
+function reviewDue(qid, now = Date.now()) {
+  const item = loadProgress()[canonicalId(qid)];
+  if (!item) return false;
+  const delay = [1, 3, 7][item.s] * 86400000;
+  return now >= item.t + delay;
+}
+function uniqueQuestions(questions) {
+  const seen = new Set();
+  return questions.filter(q => { const id = canonicalId(q.id); if (seen.has(id)) return false; seen.add(id); return true; });
+}
+function answerImages(q) {
+  return q.answerPages?.length ? `<div class="page-imgs answer-pages"><div class="ans-label">原始答案页（点击图片放大）</div>${q.answerPages.map(url => `<a href="${esc(url)}" target="_blank" rel="noopener"><img src="${esc(url)}" loading="lazy" alt="本题原始公式答案页"></a>`).join("")}</div>` : "";
+}
 
 /* ---------- 数据缓存 ---------- */
 const dataCache = {};
 async function loadJSON(url) {
-  if (!dataCache[url]) dataCache[url] = fetch(url).then(r => { if (!r.ok) throw new Error(url); return r.json(); });
+  if (!dataCache[url]) dataCache[url] = fetch(url).then(r => { if (!r.ok) throw new Error(url); return r.json(); })
+    .then(data => {
+      if (url === INDEX_URL) {
+        indexData = data;
+        _progressCache = null; // Re-read old IDs using the newly loaded alias map.
+      }
+      return data;
+    }).catch(error => { delete dataCache[url]; throw error; });
   return dataCache[url];
 }
 async function loadChapter(no) { return loadJSON(`data/ch${no}.json`); }
 async function loadExam(id) { return loadJSON(`data/${id}.json`); }
 
 /* ---------- 工具 ---------- */
-function esc(s) { return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+function esc(s) { return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
 function shuffle(arr) {
   const a = arr.slice();
   for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
@@ -47,19 +151,22 @@ const STATUS_NAME = ["不会", "模糊", "会"];
 window.addEventListener("hashchange", render);
 
 async function render() {
+  const version = ++renderVersion;
   const hash = location.hash || "#/";
   const app = document.getElementById("app");
   const [_, route, a, b, c] = hash.split("/");
   document.querySelectorAll(".tabbar a").forEach(el => {
     const tab = el.getAttribute("data-tab");
     const on = (route === "" && tab === "home") ||
-      (tab === route) ||
+      (tab === route) || (route === "review" && tab === "wrong") ||
       (route === "ch" && tab === "chapters") ||
       (route === "notes" && tab === "chapters") ||
       (route === "quiz" && tab === (a === "exam" ? "exams" : "chapters"));
     el.classList.toggle("on", on);
   });
   try {
+    await loadJSON(INDEX_URL);
+    if (version !== renderVersion) return;
     if (!route) await pageHome(app);
     else if (route === "chapters") await pageChapters(app);
     else if (route === "ch") await pageChapter(app, +a);
@@ -67,20 +174,27 @@ async function render() {
     else if (route === "notes") await pageNotes(app, +a);
     else if (route === "exams") await pageExams(app);
     else if (route === "wrong") await pageWrong(app);
+    else if (route === "review") await pageReview(app, a || "due");
     else app.innerHTML = '<div class="empty">页面不存在</div>';
   } catch (e) {
-    app.innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`;
+  if (version !== renderVersion) return;
+    app.innerHTML = `<div class="empty">加载失败：${esc(e.message)}<br><button class="btn" id="retry">重新加载</button></div>`;
+    document.getElementById("retry").onclick = render;
   }
+  if (version !== renderVersion) return;
   window.scrollTo(0, 0);
 }
 
 /* ---------- 首页 ---------- */
 async function pageHome(app) {
+  const version = renderVersion;
   const idx = await loadJSON(INDEX_URL);
+  if (version !== renderVersion) return;
   const p = loadProgress();
-  const done = Object.keys(p).length;
-  const wrongCnt = Object.values(p).filter(v => v.s === 0).length;
-  const totN = idx.chapters.reduce((s, ch) => s + ch.n, 0) + idx.exams.reduce((s, e) => s + e.n, 0);
+  const activeIds = new Set([...idx.chapters, ...idx.exams].flatMap(m => m.questionIds));
+  const done = Object.keys(p).filter(id => activeIds.has(id)).length;
+  const wrongCnt = Object.entries(p).filter(([id, v]) => activeIds.has(id) && v.s === 0).length;
+  const totN = idx.uniqueQuestions;
   app.innerHTML = `
   <div class="header"><div class="header-in">
     <h1>咨询工程师 · 实务刷题</h1>
@@ -93,6 +207,8 @@ async function pageHome(app) {
     </div>
   </div>
   <div class="wrap">
+    <div class="review-links"><a class="btn" href="#/review/due">今日待复习</a><a class="btn ghost" href="#/review/fuzzy">模糊题</a><a class="btn ghost" href="#/review/wrong">不会的题</a></div>
+    <div class="backup-row"><button class="btn gray sm" id="export-progress">导出进度</button><label class="btn gray sm">导入进度<input type="file" id="import-progress" accept="application/json,.json"></label></div>
     <div class="section-title">章节刷题<a class="more" href="#/chapters">全部章节 →</a></div>
     <div class="ch-list">${idx.chapters.map(ch => chCard(ch)).join("")}</div>
     <div class="section-title">历年真题<a class="more" href="#/exams">全部 →</a></div>
@@ -102,6 +218,8 @@ async function pageHome(app) {
     <div class="footer-note">数据来源于 2026 年备考资料 PDF（建工网校 / 环球网校 / 川杨学堂 / 优路 / 天一等），仅供个人学习使用</div>
   </div>`;
   updateChapterBars(idx);
+  const exportBtn = document.getElementById("export-progress");
+  if (exportBtn) { exportBtn.onclick = exportProgress; document.getElementById("import-progress").onchange = e => importProgress(e.target.files[0]); }
 }
 
 function examCard(e) {
@@ -129,7 +247,9 @@ function cn(n) { return ["一","二","三","四","五","六","七","八","九","
 
 /* ---------- 章节列表 ---------- */
 async function pageChapters(app) {
+  const version = renderVersion;
   const idx = await loadJSON(INDEX_URL);
+  if (version !== renderVersion) return;
   const p = loadProgress();
   app.innerHTML = `
   <div class="header"><div class="header-in"><h1>全部章节</h1><div class="sub">按章节复习 · 点击章节进入</div></div></div>
@@ -139,29 +259,27 @@ async function pageChapters(app) {
   updateChapterBars(idx);
 }
 
-async function updateChapterBars(idx) {
-  // 载入各章题 id 计算进度（并行）
-  await Promise.all(idx.chapters.map(async ch => {
-    const d = await loadChapter(ch.no);
-    let done = 0, ok = 0;
-    d.questions.forEach(q => { const s = getStatus(q.id); if (s >= 0) done++; if (s === 2) ok++; });
-    const pct = d.questions.length ? Math.round(ok / d.questions.length * 100) : 0;
-    const cards = document.querySelectorAll(`a.ch-card[href="#/ch/${ch.no}"]`);
-    cards.forEach(card => {
-      const bar = card.querySelector(".ch-bar i");
-      const pctEl = card.querySelector(".ch-pct");
-      if (bar) bar.style.width = pct + "%";
-      if (pctEl) { pctEl.textContent = done ? pct + "%" : ""; pctEl.style.color = pct >= 80 ? "var(--ok)" : pct >= 40 ? "var(--warn)" : "var(--bad)"; }
+function updateChapterBars(idx) {
+  for (const ch of idx.chapters) {
+    const done = ch.questionIds.filter(id => getStatus(id) >= 0).length;
+    const ok = ch.questionIds.filter(id => getStatus(id) === 2).length;
+    const pct = ch.questionIds.length ? Math.round(ok / ch.questionIds.length * 100) : 0;
+    document.querySelectorAll(`a.ch-card[href="#/ch/${ch.no}"]`).forEach(card => {
+      card.querySelector(".ch-bar i").style.width = pct + "%";
+      card.querySelector(".ch-pct").textContent = done ? pct + "%" : "";
     });
-  }));
+  }
 }
 
 /* ---------- 章节详情（浏览 + 入口） ---------- */
 let browseState = { no: null, src: "全部", kw: "", expanded: {} };
 
 async function pageChapter(app, no) {
+  const version = renderVersion;
   const d = await loadChapter(no);
+  if (version !== renderVersion) return;
   const idx = await loadJSON(INDEX_URL);
+  if (version !== renderVersion) return;
   browseCache = d.questions;
   const meta = idx.chapters.find(c => c.no === no);
   const srcs = ["全部", ...Object.keys(d.questions.reduce((m, q) => (m[q.src] = 1, m), {}))];
@@ -181,8 +299,8 @@ async function pageChapter(app, no) {
     </div>
   </div>
   <div class="wrap">
-    <div class="filters">${srcs.map(s => `<span class="chip ${s === browseState.src ? "on" : ""}" data-src="${esc(s)}">${esc(s)}</span>`).join("")}</div>
-    <input class="search" id="kw" placeholder="搜索关键词（题干 / 答案）…" value="${esc(browseState.kw)}">
+    <div class="filters">${srcs.map(s => `<button class="chip ${s === browseState.src ? "on" : ""}" aria-pressed="${s === browseState.src}" data-src="${esc(s)}">${esc(s)}</button>`).join("")}</div>
+    <input aria-label="搜索题干或答案" class="search" id="kw" placeholder="搜索关键词（题干 / 答案）…" value="${esc(browseState.kw)}">
     <div id="qlist">${list.map((q, i) => qItem(q, i)).join("") || '<div class="empty">没有符合条件的题目</div>'}</div>
   </div>`;
   // 事件
@@ -205,7 +323,7 @@ function qItem(q, i) {
   const stColor = st === 2 ? "var(--ok)" : st === 1 ? "var(--warn)" : st === 0 ? "var(--bad)" : "#c3cbd9";
   return `<div class="q-item" data-qid="${esc(q.id)}">
     <div class="q-head">
-      <span class="q-badge ${q.type === "案例" ? "case" : "short"}">${q.type}</span>
+      <span class="q-badge ${q.type === "案例" ? "case" : "short"}">${esc(q.type)}</span>
       <div class="q-text">
         ${q.ctx ? `<div class="q-ctx">${esc(q.ctx)}</div>` : ""}
         ${esc(q.q)}
@@ -213,7 +331,7 @@ function qItem(q, i) {
       </div>
     </div>
     ${pagesOpen && q.pages ? `<div class="page-imgs">${q.pages.map(u => `<img src="${esc(u)}" loading="lazy" alt="原题页面">`).join("")}</div>` : ""}
-    ${open ? `<div class="q-body"><div class="ans-label">参考答案</div><div class="ans">${esc(q.a)}</div></div>` : ""}
+    ${open ? `<div class="q-body"><div class="ans-label">参考答案</div><div class="ans">${esc(q.a)}</div>${answerImages(q)}</div>` : ""}
     <div class="q-actions">
       ${q.pages && q.pages.length ? `<button class="page-btn" data-pid="${esc(q.id)}">${pagesOpen ? "收起原题图表" : "📄 原题图表"}</button>` : ""}
       <button class="toggle-btn" data-tid="${esc(q.id)}">${open ? "收起答案" : "查看答案"}</button>
@@ -255,25 +373,46 @@ function currentBrowseQuestion(id) {
 /* ---------- 刷题模式 ---------- */
 let quiz = null;
 async function pageQuiz(app, kind, key, mode) {
+  const version = renderVersion;
   let questions, title, backHref;
-  if (kind === "ch") {
+  if (kind === "review") {
+    questions = await allQuestions();
+    if (version !== renderVersion) return;
+    title = REVIEW_TITLES[key] || REVIEW_TITLES.due;
+    backHref = `#/review/${key}`;
+  } else if (kind === "ch") {
     const no = +key;
     const d = await loadChapter(no);
+    if (version !== renderVersion) return;
     questions = d.questions;
     title = `第${cn(no)}章 ${d.title}`;
     backHref = `#/ch/${no}`;
     if (!browseCache || browseCache !== questions) browseCache = questions;
-  } else {
+  } else if (kind === "exam") {
     const e = await loadExam(key);
+    if (version !== renderVersion) return;
     questions = e.questions;
     title = e.title;
     backHref = "#/exams";
-  }
-  const p = loadProgress();
-  if (mode === "wrong") questions = questions.filter(q => getStatus(q.id) === 0);
-  if (!questions.length) { app.innerHTML = `<div class="wrap"><div class="empty">没有需要刷的题目 🎉</div><div class="btn-row"><a class="btn block" href="${backHref}">返回</a></div></div>`; return; }
-  if (!quiz || quiz.key !== `${kind}/${key}/${mode}`) {
-    quiz = { key: `${kind}/${key}/${mode}`, queue: shuffle(questions), i: 0, stats: [0, 0, 0], marks: {}, title, backHref, questions };
+  } else { throw new Error("练习入口无效"); }
+  questions = uniqueQuestions(questions);
+  const sessionKey = `${kind}/${key}/${mode}`;
+  if (!quiz || quiz.key !== sessionKey || quiz.ended) {
+    const restored = restoreSession(sessionKey, questions);
+    const candidates = questions.filter(q => kind === "review" ? reviewMatch(q, key) : mode !== "wrong" || getStatus(q.id) === 0);
+    if (!restored && !candidates.length) { app.innerHTML = `<div class="wrap"><div class="empty">没有需要刷的题目 🎉</div><div class="btn-row"><a class="btn block" href="${backHref}">返回</a></div></div>`; return; }
+    quiz = { key: sessionKey, queue: shuffle(candidates), i: 0, marks: {}, title, backHref,
+      questions, ...restored, ended: false };
+    quiz.stats = [0, 0, 0]; Object.values(quiz.marks).forEach(v => quiz.stats[v]++);
+    if (restored) {
+      app.innerHTML = `<div class="wrap"><div class="quiz-done"><h2>继续上次练习</h2><p>${esc(title)} · 第 ${quiz.i + 1} / ${quiz.queue.length} 题</p><div class="btn-row"><button class="btn" id="continue-session">继续练习</button><button class="btn gray" id="new-session">重新开始</button></div></div></div>`;
+      document.getElementById("continue-session").onclick = () => drawQuiz(app);
+      document.getElementById("new-session").onclick = () => {
+        if (!candidates.length) { notify("目前没有待练习题目。"); return; }
+        quiz.queue = shuffle(candidates); quiz.i = 0; quiz.marks = {}; quiz.stats = [0, 0, 0]; quiz.revealed = {}; drawQuiz(app);
+      };
+      return;
+    }
   }
   drawQuiz(app);
 }
@@ -282,6 +421,8 @@ function drawQuiz(app) {
   const q = quiz.queue[quiz.i];
   const total = quiz.queue.length;
   if (quiz.i >= total) { drawQuizDone(app); return; }
+  quiz.ended = false;
+  saveSession();
   const revealed = quiz.revealed || (quiz.revealed = {});
   const show = !!revealed[q.id];
   const pagesOpen = !!revealed[q.id + ":p"];
@@ -303,7 +444,7 @@ function drawQuiz(app) {
         <button class="btn ghost sm page-quiz-btn" id="pagebtn" style="margin-top:10px;width:100%">${pagesOpen ? "收起原题图表" : "📄 查看原题图表（表格/图形）"}</button>` : ""}
       <div class="ans-zone ${show ? "show" : ""}">
         <div class="ans-label">参考答案</div>
-        <div class="ans">${esc(q.a)}</div>
+        <div class="ans">${esc(q.a)}</div>${answerImages(q)}
       </div>
       ${show ? `
         <div class="mark-row">
@@ -325,7 +466,7 @@ function drawQuiz(app) {
   if (show) {
     app.querySelectorAll(".mark-row .btn").forEach(b => b.onclick = () => {
       const s = +b.dataset.s;
-      saveStatus(q.id, s);
+      if (!saveStatus(q.id, s)) return;
       quiz.marks[q.id] = s; // 按题去重，返回重做不重复计数
       quiz.stats = [0, 0, 0];
       Object.values(quiz.marks).forEach(v => quiz.stats[v]++);
@@ -342,6 +483,7 @@ function drawQuiz(app) {
 }
 
 function drawQuizDone(app) {
+  quiz.ended = true; saveSession();
   const [w, m, k] = quiz.stats;
   const answered = w + m + k;
   app.innerHTML = `
@@ -366,7 +508,10 @@ function drawQuizDone(app) {
     </div>
   </div>`;
   document.getElementById("restart").onclick = () => {
-    quiz.queue = shuffle(quiz.questions); quiz.i = 0; quiz.stats = [0, 0, 0]; quiz.marks = {}; quiz.revealed = {}; drawQuiz(app);
+    const [kind, key, mode] = quiz.key.split("/");
+    const pool = quiz.questions.filter(q => kind === "review" ? reviewMatch(q, key) : mode !== "wrong" || getStatus(q.id) === 0);
+    if (!pool.length) { notify("当前没有待练习题目。"); return; }
+    quiz.queue = shuffle(pool); quiz.i = 0; quiz.stats = [0, 0, 0]; quiz.marks = {}; quiz.revealed = {}; drawQuiz(app);
   };
   document.getElementById("wrong-again").onclick = () => {
     const wrongs = quiz.questions.filter(q => getStatus(q.id) === 0);
@@ -377,7 +522,9 @@ function drawQuizDone(app) {
 
 /* ---------- 背诵考点 ---------- */
 async function pageNotes(app, no) {
+  const version = renderVersion;
   const d = await loadChapter(no);
+  if (version !== renderVersion) return;
   if (!d.notes || !d.notes.length) { app.innerHTML = `<div class="empty">本章暂无背诵考点</div>`; return; }
   app.innerHTML = `
   <div class="header"><div class="header-in"><h1>第${cn(no)}章 ${esc(d.title)} · 背诵考点</h1><div class="sub">共 ${d.notes.length} 个考点 · 点击展开</div></div>
@@ -387,19 +534,21 @@ async function pageNotes(app, no) {
     <div class="notes-list">
     ${d.notes.map((n, i) => `
       <div class="note-item" data-i="${i}">
-        <div class="note-title">${esc(n.t)}<span class="arrow">▶</span></div>
+        <button class="note-title" aria-expanded="false">${esc(n.t)}<span class="arrow" aria-hidden="true">▶</span></button>
         <div class="note-content">${esc(n.c)}</div>
       </div>`).join("")}
     </div>
   </div>`;
-  app.querySelectorAll(".note-title").forEach(t => t.onclick = () => t.closest(".note-item").classList.toggle("open"));
-  document.getElementById("expand-all").onclick = () => app.querySelectorAll(".note-item").forEach(n => n.classList.add("open"));
-  document.getElementById("collapse-all").onclick = () => app.querySelectorAll(".note-item").forEach(n => n.classList.remove("open"));
+  app.querySelectorAll(".note-title").forEach(t => t.onclick = () => { const open = t.closest(".note-item").classList.toggle("open"); t.setAttribute("aria-expanded", String(open)); });
+  document.getElementById("expand-all").onclick = () => app.querySelectorAll(".note-item").forEach(n => { n.classList.add("open"); n.querySelector(".note-title").setAttribute("aria-expanded", "true"); });
+  document.getElementById("collapse-all").onclick = () => app.querySelectorAll(".note-item").forEach(n => { n.classList.remove("open"); n.querySelector(".note-title").setAttribute("aria-expanded", "false"); });
 }
 
 /* ---------- 综合卷 ---------- */
 async function pageExams(app) {
+  const version = renderVersion;
   const idx = await loadJSON(INDEX_URL);
+  if (version !== renderVersion) return;
   const zt = idx.exams.filter(e => e.kind === "zhenti");
   const mn = idx.exams.filter(e => e.kind !== "zhenti");
   const card = e => `
@@ -424,10 +573,13 @@ async function pageExams(app) {
 
 /* ---------- 错题本 ---------- */
 async function pageWrong(app) {
+  const version = renderVersion;
   const idx = await loadJSON(INDEX_URL);
+  if (version !== renderVersion) return;
   const p = loadProgress();
-  const wrongIds = Object.keys(p).filter(id => p[id].s === 0);
-  if (!wrongIds.length) {
+  const currentIds = new Set([...idx.chapters, ...idx.exams].flatMap(meta => meta.questionIds));
+  const wrongIds = new Set(Object.keys(p).filter(id => currentIds.has(id) && p[id].s === 0));
+  if (!wrongIds.size) {
     app.innerHTML = `<div class="header"><div class="header-in"><h1>错题本</h1></div></div><div class="wrap"><div class="empty">暂无错题，继续保持！🎉<br><br><button class="btn sm gray" onclick="if(confirm('确定清空全部作答记录吗？'))clearProgress()">清空全部记录</button></div></div>`;
     return;
   }
@@ -435,17 +587,22 @@ async function pageWrong(app) {
   const groups = [];
   await Promise.all(idx.chapters.map(async ch => {
     const d = await loadChapter(ch.no);
-    const qs = d.questions.filter(q => wrongIds.includes(q.id));
+    if (version !== renderVersion) return;
+    const qs = d.questions.filter(q => wrongIds.has(canonicalId(q.id)));
     if (qs.length) groups.push({ no: ch.no, title: `第${cn(ch.no)}章 ${ch.title}`, qs });
   }));
   const wrongExams = [];
   await Promise.all(idx.exams.map(async e => {
     const d = await loadExam(e.id);
-    const qs = d.questions.filter(q => wrongIds.includes(q.id));
+    if (version !== renderVersion) return;
+    const qs = d.questions.filter(q => wrongIds.has(canonicalId(q.id)));
     if (qs.length) wrongExams.push({ e, n: qs.length, qs });
   }));
+  if (version !== renderVersion) return;
+  groups.sort((a, b) => a.no - b.no);
+  wrongExams.sort((a, b) => idx.exams.findIndex(e => e.id === a.e.id) - idx.exams.findIndex(e => e.id === b.e.id));
   app.innerHTML = `
-  <div class="header"><div class="header-in"><h1>错题本</h1><div class="sub">共 ${wrongIds.length} 道标记为“不会”的题</div></div></div>
+  <div class="header"><div class="header-in"><h1>错题本</h1><div class="sub">共 ${wrongIds.size} 道标记为“不会”的题</div></div></div>
   <div class="wrap">
     ${wrongExams.map(x => `
       <div class="section-title">${esc(x.e.title)}（${x.n} 题）<a class="more" href="#/quiz/exam/${x.e.id}/wrong">去重刷 →</a></div>
@@ -458,6 +615,30 @@ async function pageWrong(app) {
   browseCache = [];
   wrongExams.forEach(x => browseCache.push(...x.qs));
   groups.forEach(g => browseCache.push(...g.qs));
+  bindToggles();
+}
+
+const REVIEW_TITLES = { due: "今日待复习", fuzzy: "模糊题", wrong: "不会的题" };
+function reviewMatch(q, mode) {
+  return mode === "fuzzy" ? getStatus(q.id) === 1 : mode === "wrong" ? getStatus(q.id) === 0 : reviewDue(q.id);
+}
+async function allQuestions() {
+  const idx = await loadJSON(INDEX_URL);
+  const data = await Promise.all([
+    ...idx.chapters.map(ch => loadChapter(ch.no)), ...idx.exams.map(exam => loadExam(exam.id))
+  ]);
+  return uniqueQuestions(data.flatMap(d => d.questions));
+}
+async function pageReview(app, mode) {
+  const version = renderVersion;
+  const questions = await allQuestions();
+  if (version !== renderVersion) return;
+  const list = questions.filter(q => reviewMatch(q, mode));
+  browseCache = list;
+  app.innerHTML = `<div class="header"><div class="header-in"><h1>${esc(REVIEW_TITLES[mode] || REVIEW_TITLES.due)}</h1><div class="sub">${list.length} 道独立题目 · 不会 / 模糊 / 会了分别在 1 / 3 / 7 天后复习</div></div></div>
+    <div class="wrap"><div class="review-links">${Object.entries(REVIEW_TITLES).map(([key, title]) => `<a class="btn ${key === mode ? "" : "ghost"}" href="#/review/${key}">${title}</a>`).join("")}</div>
+    ${list.length ? `<a class="btn block" href="#/quiz/review/${mode}">开始复习</a>` : '<div class="empty">暂时没有待复习题目</div>'}
+    ${list.map(q => qItem(q)).join("")}</div>`;
   bindToggles();
 }
 

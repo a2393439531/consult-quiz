@@ -12,6 +12,12 @@
   --radius: 14px;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
+button, input { font: inherit; }
+button:focus-visible, a:focus-visible, input:focus-visible { outline: 3px solid var(--primary); outline-offset: 3px; }
+.note-title { width: 100%; text-align: left; border: 0; background: transparent; color: inherit; }
+.review-links, .backup-row { display: flex; flex-wrap: wrap; gap: 10px; margin: 14px 0; }
+.backup-row input { max-width: 180px; font-size: 12px; }
+#notice { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 100; max-width: min(90vw, 650px); padding: 12px 18px; border-radius: 10px; background: #1c2333; color: white; box-shadow: 0 2px 12px #0003; }
 html { -webkit-text-size-adjust: 100%; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
