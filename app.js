@@ -4,20 +4,26 @@
 const INDEX_URL = "data/index.json";
 const LS_KEY = "cctp2026_progress_v1";
 
-/* ---------- 进度存储 ---------- */
+/* ---------- 进度存储（内存缓存，避免每张卡片重复解析 localStorage） ---------- */
+let _progressCache = null;
 function loadProgress() {
-  try { return JSON.parse(localStorage.getItem(LS_KEY) || "{}"); } catch (e) { return {}; }
+  if (_progressCache) return _progressCache;
+  try { _progressCache = JSON.parse(localStorage.getItem(LS_KEY) || "{}"); } catch (e) { _progressCache = {}; }
+  return _progressCache;
 }
 function saveStatus(qid, s) {
   const p = loadProgress();
   p[qid] = { s, t: Date.now() };
+  _progressCache = p;
   localStorage.setItem(LS_KEY, JSON.stringify(p));
 }
 function getStatus(qid) {
   const v = loadProgress()[qid];
   return v ? v.s : -1; // -1 未做, 0 不会, 1 模糊, 2 会
 }
-function clearProgress() { localStorage.removeItem(LS_KEY); render(); }
+function clearProgress() { _progressCache = null; localStorage.removeItem(LS_KEY); render(); }
+// 其他标签页修改进度时同步刷新内存缓存
+window.addEventListener("storage", () => { _progressCache = null; });
 
 /* ---------- 数据缓存 ---------- */
 const dataCache = {};
@@ -45,7 +51,13 @@ async function render() {
   const app = document.getElementById("app");
   const [_, route, a, b, c] = hash.split("/");
   document.querySelectorAll(".tabbar a").forEach(el => {
-    el.classList.toggle("on", el.getAttribute("data-tab") === route || (route === "" && el.dataset.tab === "home") || (route === "ch" && el.dataset.tab === "chapters") || (route === "notes" && el.dataset.tab === "chapters") || (route === "quiz" && el.dataset.tab === "chapters"));
+    const tab = el.getAttribute("data-tab");
+    const on = (route === "" && tab === "home") ||
+      (tab === route) ||
+      (route === "ch" && tab === "chapters") ||
+      (route === "notes" && tab === "chapters") ||
+      (route === "quiz" && tab === (a === "exam" ? "exams" : "chapters"));
+    el.classList.toggle("on", on);
   });
   try {
     if (!route) await pageHome(app);
@@ -240,7 +252,7 @@ async function pageQuiz(app, kind, key, mode) {
   if (mode === "wrong") questions = questions.filter(q => getStatus(q.id) === 0);
   if (!questions.length) { app.innerHTML = `<div class="wrap"><div class="empty">没有需要刷的题目 🎉</div><div class="btn-row"><a class="btn block" href="${backHref}">返回</a></div></div>`; return; }
   if (!quiz || quiz.key !== `${kind}/${key}/${mode}`) {
-    quiz = { key: `${kind}/${key}/${mode}`, queue: shuffle(questions), i: 0, stats: [0, 0, 0], title, backHref, questions };
+    quiz = { key: `${kind}/${key}/${mode}`, queue: shuffle(questions), i: 0, stats: [0, 0, 0], marks: {}, title, backHref, questions };
   }
   drawQuiz(app);
 }
@@ -285,7 +297,9 @@ function drawQuiz(app) {
     app.querySelectorAll(".mark-row .btn").forEach(b => b.onclick = () => {
       const s = +b.dataset.s;
       saveStatus(q.id, s);
-      quiz.stats[s]++;
+      quiz.marks[q.id] = s; // 按题去重，返回重做不重复计数
+      quiz.stats = [0, 0, 0];
+      Object.values(quiz.marks).forEach(v => quiz.stats[v]++);
       quiz.i++;
       quiz.revealed = {};
       drawQuiz(app);
@@ -323,12 +337,12 @@ function drawQuizDone(app) {
     </div>
   </div>`;
   document.getElementById("restart").onclick = () => {
-    quiz.queue = shuffle(quiz.questions); quiz.i = 0; quiz.stats = [0, 0, 0]; quiz.revealed = {}; drawQuiz(app);
+    quiz.queue = shuffle(quiz.questions); quiz.i = 0; quiz.stats = [0, 0, 0]; quiz.marks = {}; quiz.revealed = {}; drawQuiz(app);
   };
   document.getElementById("wrong-again").onclick = () => {
     const wrongs = quiz.questions.filter(q => getStatus(q.id) === 0);
     if (!wrongs.length) { alert("太棒了，没有标记为“不会”的题！"); return; }
-    quiz.queue = shuffle(wrongs); quiz.i = 0; quiz.stats = [0, 0, 0]; quiz.revealed = {}; drawQuiz(app);
+    quiz.queue = shuffle(wrongs); quiz.i = 0; quiz.stats = [0, 0, 0]; quiz.marks = {}; quiz.revealed = {}; drawQuiz(app);
   };
 }
 
@@ -397,21 +411,23 @@ async function pageWrong(app) {
   await Promise.all(idx.exams.map(async e => {
     const d = await loadExam(e.id);
     const qs = d.questions.filter(q => wrongIds.includes(q.id));
-    if (qs.length) wrongExams.push({ e, n: qs.length });
+    if (qs.length) wrongExams.push({ e, n: qs.length, qs });
   }));
   app.innerHTML = `
   <div class="header"><h1>错题本</h1><div class="sub">共 ${wrongIds.length} 道标记为“不会”的题</div></div>
   <div class="wrap">
-    ${wrongExams.map(x => `<div class="section-title">${esc(x.e.title)}（${x.n} 题）<a class="more" href="#/quiz/exam/${x.e.id}/wrong">去重刷 →</a></div>`).join("")}
+    ${wrongExams.map(x => `
+      <div class="section-title">${esc(x.e.title)}（${x.n} 题）<a class="more" href="#/quiz/exam/${x.e.id}/wrong">去重刷 →</a></div>
+      ${x.qs.map(q => qItem(q, 0)).join("")}`).join("")}
     ${groups.map(g => `
       <div class="section-title">${esc(g.title)}（${g.qs.length} 题）<a class="more" href="#/quiz/ch/${g.no}/wrong">去重刷 →</a></div>
       ${g.qs.map(q => qItem(q, 0)).join("")}`).join("")}
     <div class="footer-note"><button class="btn sm gray" onclick="if(confirm('确定清空全部作答记录吗？'))clearProgress()">清空全部作答记录</button></div>
   </div>`;
-  bindToggles();
-  // 缓存题目供展开
   browseCache = [];
+  wrongExams.forEach(x => browseCache.push(...x.qs));
   groups.forEach(g => browseCache.push(...g.qs));
+  bindToggles();
 }
 
 render();
