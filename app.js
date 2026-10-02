@@ -198,6 +198,7 @@ function refreshList(d) {
 }
 function qItem(q, i) {
   const open = !!browseState.expanded[q.id];
+  const pagesOpen = !!browseState.expanded[q.id + ":p"];
   const st = getStatus(q.id);
   const stColor = st === 2 ? "var(--ok)" : st === 1 ? "var(--warn)" : st === 0 ? "var(--bad)" : "#c3cbd9";
   return `<div class="q-item" data-qid="${esc(q.id)}">
@@ -209,8 +210,12 @@ function qItem(q, i) {
         <div class="q-src">${esc(q.src)} · <span style="color:${stColor}">${st >= 0 ? STATUS_NAME[st] : "未做"}</span></div>
       </div>
     </div>
+    ${pagesOpen && q.pages ? `<div class="page-imgs">${q.pages.map(u => `<img src="${esc(u)}" loading="lazy" alt="原题页面">`).join("")}</div>` : ""}
     ${open ? `<div class="q-body"><div class="ans-label">参考答案</div><div class="ans">${esc(q.a)}</div></div>` : ""}
-    <button class="toggle-btn" data-tid="${esc(q.id)}">${open ? "收起答案" : "查看答案"}</button>
+    <div class="q-actions">
+      ${q.pages && q.pages.length ? `<button class="page-btn" data-pid="${esc(q.id)}">${pagesOpen ? "收起原题图表" : "📄 原题图表"}</button>` : ""}
+      <button class="toggle-btn" data-tid="${esc(q.id)}">${open ? "收起答案" : "查看答案"}</button>
+    </div>
   </div>`;
 }
 function bindToggles() {
@@ -223,6 +228,20 @@ function bindToggles() {
     const tmp = document.createElement("div");
     tmp.innerHTML = qItem(q);
     item.replaceWith(tmp.firstElementChild);
+    bindToggles();
+  });
+  document.querySelectorAll(".page-btn").forEach(b => b.onclick = () => {
+    const id = b.dataset.pid;
+    browseState.expanded[id + ":p"] = !browseState.expanded[id + ":p"];
+    const q = currentBrowseQuestion(id);
+    const item = b.closest(".q-item");
+    if (!q || !item) return;
+    const tmp = document.createElement("div");
+    tmp.innerHTML = qItem(q);
+    const fresh = tmp.firstElementChild;
+    item.replaceWith(fresh);
+    const imgs = fresh.querySelectorAll(".page-imgs img");
+    if (imgs.length) fresh.scrollIntoView({ behavior: "smooth", block: "nearest" });
     bindToggles();
   });
 }
@@ -263,6 +282,7 @@ function drawQuiz(app) {
   if (quiz.i >= total) { drawQuizDone(app); return; }
   const revealed = quiz.revealed || (quiz.revealed = {});
   const show = !!revealed[q.id];
+  const pagesOpen = !!revealed[q.id + ":p"];
   app.innerHTML = `
   <div class="wrap">
     <div class="quiz-top">
@@ -275,6 +295,9 @@ function drawQuiz(app) {
     <div class="quiz-card">
       ${q.ctx ? `<div class="ctx">${esc(q.ctx)}</div>` : ""}
       <div class="qq"><span class="qnum">${q.type === "案例" ? "【案例】" : "【简答】"}</span>${esc(q.q)}</div>
+      ${q.pages && q.pages.length ? `
+        ${pagesOpen ? `<div class="page-imgs">${q.pages.map(u => `<img src="${esc(u)}" loading="lazy" alt="原题页面">`).join("")}</div>` : ""}
+        <button class="btn ghost sm page-quiz-btn" id="pagebtn" style="margin-top:10px;width:100%">${pagesOpen ? "收起原题图表" : "📄 查看原题图表（表格/图形）"}</button>` : ""}
       <div class="ans-zone ${show ? "show" : ""}">
         <div class="ans-label">参考答案</div>
         <div class="ans">${esc(q.a)}</div>
@@ -293,6 +316,8 @@ function drawQuiz(app) {
       <button class="btn gray sm" id="quit">结束本次</button>
     </div>
   </div>`;
+  const pageBtn = document.getElementById("pagebtn");
+  if (pageBtn) pageBtn.onclick = () => { revealed[q.id + ":p"] = !pagesOpen; drawQuiz(app); };
   if (show) {
     app.querySelectorAll(".mark-row .btn").forEach(b => b.onclick = () => {
       const s = +b.dataset.s;
